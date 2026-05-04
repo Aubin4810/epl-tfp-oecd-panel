@@ -1,0 +1,1086 @@
+---
+format: 
+  pdf:
+    geometry:
+      - top=2cm
+      - bottom=2.5cm
+      - left=1.5cm
+      - right=1.5cm
+    fontsize: 11pt
+    linestretch: 1.5
+    indent: true
+    include-in-header:
+      text: |
+        \usepackage{float}
+        \floatplacement{table}{H}
+        \floatplacement{figure}{H}
+        \usepackage{parskip}
+editor: visual
+execute: 
+    echo: false
+    warning: false
+    message: false
+---
+
+```{r, include = FALSE}
+library(lmtest)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(fixest)
+library(stringr)
+library(countrycode)
+library(plm)
+library(sandwich)
+library(ggplot2)
+library(knitr)
+library(corrplot)
+library(janitor)
+library(modelsummary)
+library(rstudioapi)
+library(kableExtra)
+```
+
+```{r, include = FALSE}
+pwt_raw <- fread("~/Desktop/M1 S2 A2E/Econometrics/Mémoire1/Prod:Reg/HC et TFP/2026-03-27T18-14_export.csv", header = TRUE)
+```
+
+```{r, eval=FALSE}
+View(pwt_raw)
+```
+
+```{r, include = FALSE}
+names(pwt_raw)
+```
+
+```{r, include = FALSE}
+pwt_keep <- pwt_raw %>%
+  filter(`Variable code` %in% c("rtfpna", "hc"))
+```
+
+```{r, include = FALSE}
+pwt_years <- names(pwt_keep)[grepl("^\\d{4}$", names(pwt_keep))]
+# Vecteur année utile pour melt !
+```
+
+```{r, include = FALSE}
+pwt_long <- melt(pwt_keep,
+  id.vars = c("ISO code", "Country", "Variable code", "Variable name"),
+  measure.vars = pwt_years,
+  variable.name = "year",
+  value.name = "value")
+```
+
+```{r, eval=FALSE}
+View(pwt_long)
+```
+
+```{r, include = FALSE}
+pwt_long[, year := as.integer(as.character(year))]
+pwt_long[, value := as.numeric(value)]
+```
+
+```{r, include = FALSE}
+pwt <- dcast(pwt_long, `ISO code` + year ~ `Variable code`, value.var = "value")
+# dcast = inverse de melt on passe de long à large 
+```
+
+```{r, include = FALSE}
+setnames(pwt, "ISO code", "iso3")
+```
+
+```{r, include = FALSE}
+pwt <- pwt %>% 
+  rename(TFP_pwt = rtfpna, human_capital = hc) %>%
+  filter(year>=1998, year <= 2019) %>%
+  mutate(ln_TFP_pwt = log(TFP_pwt), ln_human_capital = log(human_capital)) %>% 
+  arrange(iso3, year)
+```
+
+```{r, include = FALSE}
+OECD_iso3 <- c("AUS", "AUT", "BEL", "CAN", "CHL", "COL", "CRI", "CZE",
+               "DNK", "EST", "FIN", "FRA", "DEU", "GRC", "HUN", "ISL",
+               "IRL", "ISR", "ITA", "JPN", "KOR", "LVA", "LTU", "LUX",
+               "MEX", "NLD", "NZL", "NOR", "POL", "PRT", "SVK", "SVN",
+               "ESP", "SWE", "CHE", "TUR", "GBR", "USA")
+
+pwt <- pwt %>%
+  filter(iso3 %in% OECD_iso3)
+
+length(unique(pwt$iso3))
+```
+
+```{r, eval=FALSE}
+View(pwt)
+```
+
+```{r, include = FALSE}
+glimpse(pwt) # pdf
+```
+
+```{r, include = FALSE}
+length(unique(pwt$iso3))
+```
+
+```{r, include = FALSE}
+unique(pwt$iso3)
+```
+
+```{r, include = FALSE}
+# - LP1_G = croissance de la productivité du travail par heure
+# - LP2_G = croissance de la productivité du travail par personne employée
+
+k_raw <- fread("~/Desktop/M1 S2 A2E/Econometrics/Mémoire1/Prod:Reg/EU KLEMS/EUKLEMS-growth accounts.csv")
+```
+
+```{r, include = FALSE}
+euklems_prod <- k_raw %>%
+  filter(
+    var %in% c("LP1_G", "LP2_G"),
+    nace_r2_code == "TOT",
+    year >= 1998,
+    year <= 2019
+  ) %>%
+  mutate(
+    geo2 = geo_code,
+    geo2 = if_else(geo2 == "UK", "GB", geo2),
+    geo2 = if_else(geo2 == "EL", "GR", geo2),
+    iso3 = countrycode(geo2, origin = "iso2c", destination = "iso3c")
+  ) %>%
+  filter(!is.na(iso3)) %>%
+  select(iso3, year, var, value) %>%
+  pivot_wider(
+    names_from = var,
+    values_from = value
+  ) %>%
+  rename(
+    lp_hour_growth   = LP1_G,
+    lp_worker_growth = LP2_G
+  ) %>%
+  arrange(iso3, year)
+```
+
+```{r, include = FALSE}
+glimpse(euklems_prod)
+```
+
+```{r, include = FALSE}
+setdiff(OECD_iso3, unique(euklems_prod$iso3))
+```
+
+```{r, include = FALSE}
+epl_raw <- fread("~/Desktop/M1 S2 A2E/Econometrics/Mémoire1/Prod:Reg/OECD-EPL.csv")
+```
+
+```{r, eval=FALSE}
+View(epl_raw)
+```
+
+```{r, include = FALSE}
+epl <- epl_raw %>%
+  filter(MEASURE == "EPL_OV") %>%
+  transmute(
+    iso3 = REF_AREA,
+    year = as.integer(TIME_PERIOD),
+    epl = as.numeric(OBS_VALUE)
+  )%>%
+  filter( year >=1998, year <= 2019) %>% 
+  arrange(iso3, year)
+```
+
+```{r, include = FALSE}
+glimpse(epl)
+```
+
+```{r, eval=FALSE}
+View(epl)
+```
+
+```{r, include = FALSE}
+epl_count <- epl %>% 
+  count(iso3) %>% 
+  filter(n < 22)
+
+as.data.frame(epl_count)
+```
+
+```{r include = FALSE}
+epl <- epl %>%
+  filter(iso3 %in% OECD_iso3)
+
+length(unique(epl$iso3))
+```
+
+```{r, include = FALSE}
+countries_remove<- c("COL", "CRI", "LTU", "ISL", "LVA")
+
+epl <- epl %>%
+  filter(!iso3 %in% countries_remove)
+
+length(unique(epl$iso3))  # doit donner 33
+```
+
+```{r, include = FALSE}
+library(WDI)
+```
+
+```{r, include = FALSE}
+if (!file.exists("wdi_raw.rds")) {
+  wdi_raw_2 <- WDI(
+    country = unique(epl$iso3),
+    indicator = c(
+      "NE.TRD.GNFS.ZS",
+      "SL.UEM.TOTL.ZS", 
+      "FP.CPI.TOTL.ZG",
+      "SP.POP.GROW",
+      "NE.GDI.FTOT.ZS",
+      "NY.GDP.PCAP.KD",
+      "BX.KLT.DINV.WD.GD.ZS",
+      "NE.CON.GOVT.KD",
+      "SP.POP.TOTL"
+    ),
+    start = 1998,
+    end = 2019
+  )
+  saveRDS(wdi_raw_2, "wdi_raw.rds")
+} else {
+  wdi_raw_2 <- readRDS("wdi_raw.rds")
+}
+```
+
+```{r, include = FALSE}
+any(is.na(epl$iso3))
+```
+
+```{r, include = FALSE}
+wdi <- wdi_raw_2 %>%
+  transmute(
+    iso3 = iso2c,
+    year = year,
+    trade = `NE.TRD.GNFS.ZS`,
+    unemp = `SL.UEM.TOTL.ZS`,
+    infl = `FP.CPI.TOTL.ZG`,
+    pop_g = `SP.POP.GROW`,
+    gfcf = `NE.GDI.FTOT.ZS`,
+    gdppc = `NY.GDP.PCAP.KD`,
+    fdi = `BX.KLT.DINV.WD.GD.ZS`,
+    gov_cons = `NE.CON.GOVT.KD`,
+    pop = `SP.POP.TOTL`
+  ) %>%
+  mutate(
+    iso3 = countrycode(iso3, origin = "iso2c", destination = "iso3c")
+  ) %>%
+  arrange(iso3, year)
+```
+
+```{r, include = FALSE}
+setdiff(unique(epl$iso3), unique(wdi$iso3))
+```
+
+```{r, include = FALSE}
+length(unique(wdi$iso3))
+```
+
+```{r, include = FALSE}
+glimpse(wdi)
+```
+
+```{r, include = FALSE}
+gap_raw <- fread("~/Desktop/M1 S2 A2E/Econometrics/Mémoire1/Prod:Reg/Outputgap/OECD.ECO.MAD,DSD_EO@DF_EO,+AUS+AUT+BEL+CAN+CHL+CZE+DNK+EST+FIN+FRA+DEU+HUN+GRC+ISL+IRL+ISR+ITA+JPN+KOR+LVA+LTU+LUX+MEX+NZL+NLD+POL+PRT+SVK+SVN+ESP+SWE+CHE+TUR+GBR+USA+NOR.GAP.A.csv")
+```
+
+```{r, eval=FALSE}
+View(gap_raw)
+```
+
+```{r, include = FALSE}
+output_gap <- gap_raw %>%
+  filter(MEASURE == "GAP") %>%
+  transmute(
+    iso3 = REF_AREA,
+    year = as.integer(TIME_PERIOD),
+    output_gap = as.numeric(OBS_VALUE)
+  ) %>%
+  filter(year >= 1998, year <= 2019) %>%
+  arrange(iso3, year)
+```
+
+```{r, include = FALSE}
+glimpse(output_gap)
+```
+
+```{r, include = FALSE}
+setdiff(unique(epl$iso3), unique(output_gap$iso3))
+```
+
+```{r, eval=FALSE}
+View(output_gap)
+```
+
+```{r, include = FALSE}
+length(unique(output_gap$iso3)) # 36 countries 
+```
+
+```{r, include = FALSE}
+setdiff(unique(output_gap$iso3), unique(epl$iso3))
+```
+
+```{r, include = FALSE}
+countries_remove_2 <- c("ISL", "LTU", "LVA")
+
+output_gap <- output_gap %>%
+  filter(!iso3 %in% countries_remove_2)
+
+length(unique(output_gap$iso3))
+```
+
+```{r, include = FALSE}
+nrr_raw <- fread("~/Desktop/M1 S2 A2E/Econometrics/Mémoire1/Prod:Reg/Net replacement rate unemployment/OECD.ELS.JAI,DSD_TAXBEN_NRR@DF_NRR,1.0+AUS+AUT+BEL+CAN+CHL+CZE+DNK+EST+FIN+FRA+DEU+GRC+HUN+IRL+ISL+ISR+ITA+JPN+KOR+LTU+LVA+LUX+NLD+NZL+POL+NOR+PRT+SVK+SVN+ESP+SWE+CHE+TUR+USA+GBR...S_C0..AW67._Z.M12.YES.NO.A.csv")
+```
+
+```{r, eval=FALSE}
+View(nrr_raw)
+```
+
+```{r, include = FALSE}
+replacement_rate <- nrr_raw %>%
+  filter(MEASURE == "NHIDU") %>%
+  transmute(
+    iso3 = REF_AREA,
+    year = as.integer(TIME_PERIOD),
+    replacement_rate = as.numeric(OBS_VALUE)
+  ) %>%
+  filter(year >= 1998, year <= 2019) %>%
+  arrange(iso3, year)
+```
+
+```{r, include = FALSE}
+glimpse(replacement_rate) # Taux de remplacement net en cas de chômage 
+```
+
+```{r, include = FALSE}
+setdiff(unique(epl$iso3), unique(replacement_rate$iso3))
+```
+
+```{r, include = FALSE}
+length(unique(replacement_rate$iso3))
+```
+
+```{r, include = FALSE}
+setdiff(unique(replacement_rate$iso3), unique(epl$iso3))
+```
+
+```{r, include = FALSE}
+replacement_rate <- replacement_rate %>%
+  filter(!iso3 %in% countries_remove_2)
+
+length(unique(replacement_rate$iso3))
+```
+
+```{r, include = FALSE}
+almp_raw <- fread("~/Desktop/M1 S2 A2E/Econometrics/Mémoire1/Prod:Reg/ALMP/indicator_42_20260327_filtered.csv")
+```
+
+```{r, eval=FALSE}
+View(almp_raw)
+```
+
+```{r, include = FALSE}
+almp_training <- almp_raw %>%
+  transmute(
+    iso3 = ISO,
+    year = as.integer(Year),
+    almp_training = as.numeric(Value)
+  ) %>%
+  filter(year >= 1998, year <= 2019) %>%
+  arrange(iso3, year)
+```
+
+```{r, include = FALSE}
+glimpse(almp_training)
+```
+
+```{r, include = FALSE}
+setdiff(unique(epl$iso3), unique(almp_training$iso3))
+```
+
+```{r, include = FALSE}
+setdiff(unique(almp_training$iso3), unique(epl$iso3))
+```
+
+```{r, include = FALSE}
+length(unique(almp_training$iso3))
+```
+
+```{r, include = FALSE}
+countries_remove_3 <- c("CRI","ISL", "LTU", "LVA","OECD")
+
+almp_training <- almp_training %>%
+  filter(!iso3 %in% countries_remove_3)
+
+length(unique(almp_training$iso3))
+```
+
+```{r, include = FALSE}
+pwt <- pwt %>%
+  filter(iso3 %in% unique(epl$iso3))
+
+length(unique(pwt$iso3))
+```
+
+```{r, include = FALSE}
+panel_raw <- pwt %>%
+  left_join(euklems_prod,      by = c("iso3", "year")) %>%
+  left_join(epl,               by = c("iso3", "year")) %>%
+  left_join(wdi,               by = c("iso3", "year")) %>%
+  left_join(output_gap,        by = c("iso3", "year")) %>%
+  left_join(replacement_rate,  by = c("iso3", "year")) %>%
+  left_join(almp_training,     by = c("iso3", "year")) %>%
+  arrange(iso3, year)
+
+glimpse(panel_raw)
+```
+
+```{r, include = FALSE}
+colSums(is.na(panel_raw))
+```
+
+```{r, include = FALSE}
+names(panel) 
+```
+
+```{=latex}
+\begin{titlepage}
+\centering
+
+\vspace*{3cm}
+
+{University of Caen Normandy}\\[0.5cm]
+{Master in Advanced Applied Economics}
+
+\vspace{4cm}
+
+{\large \textbf{Project in Econometrics}}\\[1cm]
+
+{\Large \textbf{The Impact of Employment Protection Legislation on Productivity:}}\\[0.5cm]
+{\Large \textbf{Evidence from a Cross-Country OECD Panel Analysis}}
+
+\vfill
+
+{\textbf{Student:} Aubin Espinas}\\[0.3cm]
+{Course: Project in Econometrics}\\[0.3cm]
+{Academic year: 2025--2026}
+
+\end{titlepage}
+```
+
+### 1. Introduction
+
+Regulation and standards aim to reduce problems, failures or inequalities that can be observed in the market or society. Sometimes these regulations can be perceived as beneficial, such as the protection of patents for intellectual property rights or even the regulation of food standards to ensure a better lifestyle. There are many standards, whether on health, construction, equity, the environment, competition... In this project, we will study the standards concerning the labor market and more particularly employment protection.
+
+As previously said, the purpose of a standard is to improve the system, but sometimes by seeking a goal, one can achieve the opposite of what was sought. In economics there is a very obvious example, that of the Laffer curve. In 1978, Arthur Laffer became famous for his theory of diminishing returns to taxes. He explains that taxes can have a beneficial effect at the macroeconomic level but up to a certain rate of levy and when this rate is reached, the tax becomes ineffective or even negative.
+
+Many people perceive a negative effect, especially on productivity. Indeed, regulations can lead to compliance costs, organizational costs, and rigidities in hiring. So they can slow down the efficient allocation of resources and consequently negatively impact productivity. This raises a legitimate question that we will try to answer: What is the impact of employment protection legislation on the total productivity of factors, evidence from panel countries-years from OECD countries.
+
+This project is organized as follows: Section 2. presents the literature review and the theoretical framework linking the EPL to the TFP. Section 3. describes the data and the sample selected. Section 4. proposes a descriptive analysis of the variables. Section 5. presents the econometric model and justifies the identification strategy. Section 6. discusses the main results, followed by a robustness analysis in section 7. to be completed by section 8. which concludes and opens the framework for further analyses.
+
+### 2. Literature review + theoretical framework
+
+Productivity is a key aspect of economic structure, and it is the basis for assessing whether an economy or enterprise in a country, region or world is doing well. Hence the importance of studying it and understanding its mechanisms and workings. Of course, there are many ways to analyze it. The analysis angle I decided to follow focuses on the impact that political decisions in the context of employment protection, as measured by the EPL (Employment Protection Legislation), can have on business productivity.
+
+The choice of total factor productivity (TFP) as the main dependent variable is necessary for two reasons. On the one hand, the EPL acts on the efficiency of factor allocation and not only on their quantities: this is precisely what the TFP captures, defined as the residue of Solow after controlling for the contributions of capital and labor. Robert Solow (1957), shows that this residue explains the majority of long-term growth in advanced economies. He explains that 2/3 of growth is explained by technical progress (the residue) and only 1/3 is explained by capital and labor. which makes it the most appropriate measure to assess the effect of regulation on overall productive efficiency. On the other hand, a measure of labor productivity would be likely to capture capital-labor substitution effects induced by the EPL, introducing a mechanical bias in the estimate. Finally, in the literature, TFP is the productivity tool that is most used to study the impact of EPL on productivity, notably in the works of Bassanini (2009). The TFP from the Penn World Tables (PWT) (Feenstra, Inklaar and Timmer, 2015), normalized to 1 in 2021 (latest version), is therefore the main dependent variable of this project.
+
+#### The theoretical channels between EPL and Productivity :
+
+Economic theory identifies two opposing channels through which employment protection can affect the TFP.
+
+The negative channel is based on adjustment costs. A stricter EPL increases the costs of layoffs, reduces firms’ ability to reallocate work quickly in response to demand shocks or technological innovation, and may maintain suboptimal employment-worker pairings. By slowing down the reallocation of labor to the most productive firms, rigid regulations are likely to reduce aggregate TFP. This is the central mechanism documented by Bassanini, Nunziata and Venn (2009), which highlight that overly burdensome firing rules can slow technology adoption and depress productivity growth in industries where such rules are most likely to be burdensome.
+
+The positive channel is based on stabilizing the employment relationship. Stronger protection reduces turnover, secures the employee relationship and can encourage companies to invest in training their employees in specific human capital. From this perspective, a stricter EPL can improve certain long-term relationships within the company and support productivity, as highlighted by Li, Fujiyama, Wu, and Zheng in their article entitled "Employment protection, corporate governance, and labor productivity around the World" (2024), which analyzes how job protection interacts with corporate governance to determine the final sign of the effect on productivity.
+
+In short, the EPL can either increase productivity through security and specific investment in human capital according to some people, or reduce it through less discipline and less flexibility for many others.
+
+#### What the empirical literature says :
+
+**Bassanini, Nunziata and Venn (2009)** constitute the central reference of this subject. Based on annual aggregate data on regulatory stringency and sectoral productivity data covering OECD countries from 1982 to 2003, the authors adopt a difference-of-differences approach that highlights the fact that the EPL should place greater demands on industries where the use of layoffs is more frequent. Their findings suggest that mandatory termination regulations have a depressive effect on TFP growth in industries where such restrictions are most likely to be burdensome. On the other hand, they find no significant effect of regulations concerning temporary contracts, which suggests that partial reforms do not have a significant impact on efficiency and technological change.
+
+**Conti and Sulis (2016)** refine this result by highlighting the sectoral heterogeneity of the effect. Based on sectoral data covering the manufacturing and services sectors in 14 EU countries, the authors show that the negative effect of a stricter EPL on TFP growth is concentrated in human capital-intensive sectors and countries close to the technological frontier. Labor market rigidities seem more costly precisely in environments where innovation and rapid adaptation play a central role. This result is fundamental for this project: it suggests that the aggregate effect of EPL on TFP, measured at macroeconomic and multi-country level, can be mitigated by this sectoral heterogeneity when aggregating economies with very different productive structures.
+
+**Li, Fujiyama, Wu, and Zheng (2024)** make an additional contribution based on a sample of companies listed in 20 OECD countries. Their differences approach finds a negative effect of the EPL on labor productivity, but above all highlights the mediating role of corporate governance: the negative effect is more pronounced when governance is weaker and incentives for effort are more limited. This result illustrates that the impact of employment protection is not isolated, but depends on the complementary institutional framework in which companies operate, which reinforces the idea of a heterogeneity of the effect according to the context.
+
+**Ciminelli and Franco (2025)** finally provide one of the most recent and precise causal identifications. Exploiting the discontinuity introduced by the legal threshold of company size during the Italian Jobs Act, the authors estimate a gain of about 1% on TFP and about 1.5% on labor productivity following the easing of the EPL, with also an increase in the capital-to-capital ratiowork. This study is particularly useful because it illustrates the consistency between the two productivity measures and confirms that the effect of EPL can be captured empirically when sufficient exogenous variation is available.
+
+Overall, this empirical literature makes it possible to identify one stylized fact. A large number of studies conclude that a stricter EPL is associated with lower productivity, whether measured by labor productivity or by the TFP, but that this effect is heterogeneous according to the geographical, economic and structural context of the company.
+
+The vast majority of this work is based on firm or sectoral data within a limited number of countries; these are microeconomic analyses. At the macroeconomic and multi-country level, two characteristics can mitigate the effects documented in the literature. On the one hand, national aggregation smoothes out the heterogeneous sectoral effects highlighted by Conti and Sulis (2016). On the other hand, the EPL index shows a low temporal variance within the same country: labor law reforms are rare and gradual, which mechanically limits the identifying power of an in-country fixed-effect estimator. These two characteristics make it plausible to obtain a null finding at this level of aggregation, without invalidating the microeconomic results of the literature.
+
+This project therefore proposes to analyze this effect at the macroeconomic level, by mobilizing a panel of 33 OECD countries over the period 1998–2019, with the Penn World Tables TFP as the dependent variable and the OECD EPL Index as the main variable of interest. The contribution of this project will therefore be to confirm the importance of the heterogeneity of the negative effect of EPL on productivity.
+
+### 3. Data and sample
+
+The panel is made up of 33 OECD countries over the period 1998-2019. This choice is marked by a concern for consistency, the countries studied will therefore be similar from an economic point of view and consequently more comparable. As for the annual range, the idea is to have a time range large enough to draw a credible conclusion.
+
+The OECD’s EPL database shows incomplete time coverage for several member countries. Five countries were excluded from the analysis due to insufficient number of observations over the period 1998-2019: Colombia (6), Costa Rica (6), Lithuania (6), Iceland (7) and Latvia (8). These countries only have EPL data from 2011-2014 at best, which does not allow identifying sufficient temporal dynamics for panel estimation.
+
+By contrast, five other countries have partial coverage but were retained in the sample: Chile, Estonia, Israel, Luxembourg and Slovenia (12 observations each). The absence of data before 2008 for these countries is explained by their late accession to the OECD or by the unavailability of historical data at the time when the database was created. These countries were nevertheless retained because their 12 observations cover a period long enough to capture the temporal variation of the EPL, and their exclusion would have reduced the institutional diversity of the sample without any substantial methodological gain. The panel is therefore slightly non-cylindrical, which is common in the empirical literature on OECD data.
+
+The panel results from the merger of six data sources: Penn World Tables (PWT) for total factor productivity and human capital, the OECD EPL database for the employment protection index, the World Development Indicators (WDI) for macroeconomic control variables, the OECD base on the output gap, as well as two additional bases on the net replacement rate and expenditure on Active Labour Market Policies (ALMP). The total panel counts 726 observations. However, five countries, Chile, Estonia, Israel, Luxembourg and Slovenia have EPL data only from 2008-2009 due to their late accession to the OECD, which reduces the number of observations used in the main model to 676.
+
+As an explanatory variable, I therefore decided to use the EPL (Employment protection labor) because it is a widely used tool in the literature; it is a trustworthy index that has proven its worth and has a high annual range. This index ranges from 0 to 6, where 6 is a country with high employment protection and 0 is a country with low employment protection. The EPL evaluates regulations concerning the dismissal of workers on regular contracts and the hiring of workers on temporary contracts. They cover both individual and collective redundancies. The indicators were developed based on the Secretariat’s reading of statutory laws, collective agreements and case law, as well as input from officials in OECD member countries and advice from national experts.
+
+As a dependent variable, it will be the TFP from the normalized PWT at 1 in 2021. TFP is more interesting than labor productivity because it captures the overall efficiency of the economy regardless of capital-labor substitutions. Employment-protective legislation could induce firms to substitute capital for labor, skewing the measure of labor productivity. The TFP avoids this mechanical bias.
+
+On the control variables side, several are integrated into the model in order to isolate the specific effect of the EPL on productivity. Human capital, derived from the Penn World Tables, is included in accordance with the work of Mankiw, Romer and Weil (1992), who establish its determining role in the production function. Trade openness, measured by the ratio of trade to GDP, captures the effects of international competition and technology transfer on productivity. The unemployment rate controls overall labor-market conditions, while the inflation rate reflects the degree of macroeconomic instability that can affect investment decisions. Gross fixed capital formation measures the productive investment effort of economies, and GDP per capita captures the initial level of development, allowing for a possible catch-up technological effect to be controlled. The output gap is introduced to distinguish the structural effects of the EPL from cyclical fluctuations in the business cycle. Finally, population growth and foreign direct investment complement the model, the latter being recognized as vectors of technological spillovers and dissemination of best productive practices.
+
+In order to test the robustness of the results, several alternative specifications will be estimated. Expenditure on active labour market policies (ALMP) will be introduced as additional control variables, this variable being complementary to the EPL to characterise the institutional architecture of the labour market. Public consumption in logarithm and a specification in log of the TFP will also be estimated in order to verify the sensitivity of the results to functional choices.
+
+### 4. Descriptive analysis
+
+The objective of this step is to seek to understand the distributions, visualize, interpret in order to subsequently, if the data allow it, perform regressions. This step is crucial for the proper conduct of the empirical analysis.
+
+```{r, include = FALSE}
+panel_clean <- panel_raw
+```
+
+```{r}
+#| label: tbl-Summary
+#| tbl-cap: "Summary of the panel"
+panel_clean %>%
+  summarise(
+    n_obs = n(),
+    n_countries = n_distinct(iso3),
+    min_year = min(year, na.rm = TRUE),
+    max_year = max(year, na.rm = TRUE)
+  ) %>%
+  kable()
+```
+
+The table above shows that there were 33 countries with complete data in the crucial variables of the model over the period 1998-2019 (22 years), representing 726 observations. The analysis will be carried out at a level level, with a cross-country data panel, including country and year fixed effects.
+
+```{r, include = FALSE}
+obs_by_country <- panel_clean %>%
+  group_by(iso3) %>%
+  summarise(n_years = n()) %>%
+  arrange(desc(n_years), iso3)
+
+obs_by_country %>%
+  kable(caption = "Number of observations by country")
+```
+
+```{r}
+panel_clean %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(cols = everything(),
+               names_to = "variable",
+               values_to = "n_missing") %>%
+  mutate(pct_missing = round(100 * n_missing / nrow(panel_clean), 2)) %>%
+  filter(n_missing > 0) %>%
+  arrange(desc(n_missing)) %>%
+  kable(caption = "Missing values by variable")
+```
+
+There are 38 countries in the OECD, five countries initially present were excluded from the panel due to insufficient temporal coverage over the period of analysis: Colombia, Costa Rica, Lithuania, Iceland and Latvia. The selected panel is therefore slightly unbalanced on certain secondary variables. The variables from PWT and WDI are complete for all 726 observations. On the other hand, the net replacement rate shows missing values for Mexico over the whole period, and ALMP expenditure is unavailable for Turkey. Since these two variables are secondary controls and not the main variable of interest, they will only be used in alternative specifications, with the relevant observations being excluded from these specific estimates. Finally, the labor productivity growth indicators from EU KLEMS show about 30% missing values and will be used only as an alternative dependent variable in robustness regressions.
+
+Here are the names used for regressions:
+
+```{r}
+names(panel_clean)
+```
+
+```{r}
+desc_stats <- panel_clean %>%
+  select(
+    TFP_pwt, ln_TFP_pwt,
+    human_capital, ln_human_capital,
+    lp_hour_growth, lp_worker_growth,
+    epl, trade, unemp, infl, pop_g, gfcf, gdppc, fdi,
+    output_gap, replacement_rate, almp_training
+  ) %>%
+  summarise(
+    across(
+      everything(),
+      list(
+        N = ~ sum(!is.na(.)),
+        Mean = ~ mean(., na.rm = TRUE),
+        SD = ~ sd(., na.rm = TRUE),
+        Min = ~ min(., na.rm = TRUE),
+        P25 = ~ quantile(., 0.25, na.rm = TRUE),
+        Median = ~ median(., na.rm = TRUE),
+        P75 = ~ quantile(., 0.75, na.rm = TRUE),
+        Max = ~ max(., na.rm = TRUE)
+      )
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("variable", ".value"),
+    names_sep = "_(?=[^_]+$)"
+  ) %>%
+  arrange(variable)
+
+options(scipen = 999)
+
+desc_stats %>%
+  kable(digits = 3, caption = "Descriptive statistics", fmt = 2)
+```
+
+The table of descriptive statistics includes 726 observations for most variables, except for labour productivity indicators from EU KLEMS (496 observations) and net replacement rate (575 observations), confirming the gaps documented in the previous section.
+
+The dependent variable TFP has a standard deviation of 0.094 and an average of 0.984, which is very low; this confirms that OECD countries have relatively homogeneous TFP levels around 1.
+
+The variable of interest, the EPL index, shows a mean of 2.382 and a standard deviation of 0.650, as well as a minimum and a relatively wide maximum, respectively 0.673 and 4.09, indicating sufficient inter-country variability to permit econometric identification of its effect on productivity.
+
+Concerning the control variables, human capital shows little dispersion around its average of 3.233, which is consistent with the homogeneous level of development of the countries in the sample. The average unemployment rate is 7.5% and the inflation rate is 2.9%, two values representative of the period 1998-2019 for the advanced economies. Trade openness, by contrast, shows strong dispersion, with an average of 92% of GDP and a standard deviation of 55 points, reflecting the structural differences between small, very open economies like Belgium or the Netherlands and large economies like the United-States or Japan. Gross fixed capital formation is on average 23% of GDP, consistent with the values usually observed in the literature. Finally, the output gap has a mean close to zero, which is expected by design for a variable measuring deviation from long-term trend.
+
+```{r}
+#| label: fig-tfp-dist
+#| fig-cap: "Distribution of TFP (PWT)"
+#| #| fig-width: 6
+#| fig-height: 3
+ggplot(panel_clean, aes(x = TFP_pwt)) +
+  geom_histogram(bins = 30) +
+  labs(x = "TFP", y = "Frequency") +
+  theme_minimal()
+```
+
+The TFP distribution has an approximately normal form, centered around 1, with a slight asymmetry to the left due to some countries showing relatively low levels of productivity in certain years. The lowest TFP is 0.667 while the highest is close to 1.3. We therefore notice in this graph that the majority of productivities per year for the countries in the panel are around 1.
+
+```{r}
+#| label: fig-epl-dist
+#| fig-cap: "Distribution of the EPL index"
+#| #| fig-width: 6
+#| fig-height: 3
+ggplot(panel_clean, aes(x = epl)) +
+  geom_histogram(bins = 30) +
+  labs(x = "EPL index", y = "Frequency") +
+  theme_minimal()
+```
+
+On the other hand, the distribution of the EPL is bimodal and irregular, reflecting the duality between the Anglo-Saxon countries limiting labor protection and the countries of Europe and Scandinavia favoring a more restrictive protection. On the histogram we observe two blocks, the first Anglo-Saxon around 1.8 to 2.2 and the second more European located around 2.8.
+
+```{r}
+#| label: fig-tfp-time
+#| fig-cap: "Evolution of mean TFP over time"
+#| #| fig-width: 6
+#| fig-height: 3
+panel_clean %>%
+  group_by(year) %>%
+  summarise(mean_tfp = mean(TFP_pwt, na.rm = TRUE)) %>%
+  ggplot(aes(x = year, y = mean_tfp)) +
+  geom_line() +
+  labs(x = "Year", y = "Mean TFP") +
+  theme_minimal()
+```
+
+Figure 3 reveals that the average TFP of the countries observed tends to increase over the long term, but it suffered a significant shock between 2007 and 2008, probably due to the sub-prime crisis, which rose from an average of 1.02 to 0.97 in just one year. In 2019, the average stabilizes around 0.99, half the path taken to return to the 2008 level.
+
+```{r}
+#| label: fig-epl-time
+#| fig-cap: "Evolution of mean EPL index over time"
+#| #| fig-width: 6
+#| fig-height: 2
+panel_clean %>%
+  group_by(year) %>%
+  summarise(mean_epl = mean(epl, na.rm = TRUE)) %>%
+  ggplot(aes(x = year, y = mean_epl)) +
+  geom_line() +
+  labs(x = "Year", y = "Mean EPL index") +
+  theme_minimal()
+```
+
+For the EPL, it is the opposite; the average of the countries observed tends to decrease from 2.45 in 1998 to 2.30 in 2019. Clearly, countries would move towards a simplification of employment protection; the reason remains to be demonstrated.
+
+```{r}
+#| label: fig-corr
+#| fig-cap: "Correlation matrix of model variables"
+#| #| fig-width: 8
+#| fig-height: 8
+cor_matrix <- panel_clean %>%
+  select(TFP_pwt, epl, human_capital, trade, unemp, 
+         infl, pop_g, gfcf, gdppc, fdi, output_gap,
+         replacement_rate, almp_training, gov_cons) %>%
+  na.omit() %>%
+  cor(use = "complete.obs")
+
+corrplot(cor_matrix, method = "color", type = "upper",
+         tl.cex = 0.7, number.cex = 0.6,
+         addCoef.col = "black")
+```
+
+In the continuation of this analysis, it is necessary to evaluate the relationships between the variables of the model, in order to avoid any problem of multicollinearity. In view of the correlation matrix, no variable is severely correlated even though the replacement rate and ALMP show a correlation of 0.52, which is moderate, or pop_G and gdppc with 0.60; this remains correct for panel analysis. These variables with a moderate correlation will therefore not be put together in the main regression to avoid any confusion. Based on these elements, population growth and ALMP are excluded from the main model. Gross Domestic Product Per Capita (gdppc) and replacement rate are more important variables for model estimation. In addition, foreign direct investment is also excluded, as its extreme distribution (standard deviation of 14.5, min: −117, max: 234) is likely to destabilize the estimate.
+
+```{r}
+#| label: fig-epl-tfp
+#| fig-cap: "Relationship between EPL and TFP"
+#| #| fig-width: 6
+#| fig-height: 3
+ggplot(panel_clean, aes(x = epl, y = TFP_pwt)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", color = "red") +
+  labs(x = "EPL index", y = "TFP") +
+  theme_minimal()
+```
+
+Finally, for this part, the use of a dot plot linking the EPL and the TFP becomes necessary. This graph suggests a gross positive relationship between the EPL and the TFP. However, this correlation probably reflects structural heterogeneity across countries rather than a causal effect of labor laws on productivity. It is precisely to correct this bias that the use of a country and year fixed effects model is necessary.
+
+### 5. Econometric model
+
+The purpose of this section is to present and justify the identification strategy chosen. It is therefore appropriate to represent our model which, as previously seen, is necessary to isolate the actual effect of the EPL on the TFP from a macroeconomic point of view.
+
+**Here is the general function of the model:**
+
+$$
+TFP_{it} = \alpha + \beta_1 EPL_{it} + \beta_2 X_{it} + \mu_i + \lambda_t + \varepsilon_{it}
+$$
+
+where TFPit represents the total factor productivity of country i in year t. EPLit, the employment protection index and Xit, the vector of control variables. The terms $\mu_i$ and $\lambda_t$ refer to country fixed effects and year fixed effects, respectively, while $\varepsilon_{it}$ represents the idiosyncratic error term. The coefficient of interest is $\beta_1$, which measures the partial effect of EPL on TFP, other things being equal.
+
+The function of the main Two-Way Fixed Effects (TWFE) model:
+
+$$
+\begin{aligned}
+TFP_{it} = \alpha &+ \beta_1 EPL_{it} + \beta_2 HC_{it} + \beta_3 GDPPC_{it} + \beta_4 GFCF_{it} \\
+&+ \beta_5 TRADE_{it} + \beta_6 UNEMP_{it} + \beta_7 INFL_{it} + \beta_8 GAP_{it} \\
+&+ \mu_i + \lambda_t + \varepsilon_{it}
+\end{aligned}
+$$
+
+The analysis will be carried out in level-level: the TFP and the control variables will be expressed in levels, without logarithmic transformation for the main specification. This choice is consistent with the nature of the dependent variable from the Penn World Tables, normalized around 1, whose distribution is approximately normal as confirmed by descriptive analysis. However, a logarithm specification of the TFP will be estimated in the robustness section to check the sensitivity of the results with respect to this choice.
+
+#### Justification for the two-way fixed effects model:
+
+It is now appropriate to justify the use of a fixed-effect model, thanks to 3 tests. The Breusch-Godfrey test, the Ftest and finally the Hausman test.
+
+```{r, include = FALSE}
+fe_1way <- plm(TFP_pwt ~ epl + human_capital + gdppc + gfcf + 
+               trade + unemp + infl + output_gap,
+               data = panel_clean, model = "within", effect = "individual")
+
+re_1way <- plm(TFP_pwt ~ epl + human_capital + gdppc + gfcf + 
+               trade + unemp + infl + output_gap,
+               data = panel_clean, model = "random", effect = "individual")
+
+phtest(fe_1way, re_1way)
+```
+
+```{r, include = FALSE}
+panel_pdata <- pdata.frame(panel_clean, index = c("iso3", "year"))
+
+pbgtest(TFP_pwt ~ epl + human_capital + gdppc + gfcf + 
+        trade + unemp + infl + output_gap, 
+        data = panel_pdata)
+```
+
+```{r, include = FALSE}
+pooled <- plm(TFP_pwt ~ epl + human_capital + gdppc + gfcf + 
+              trade + unemp + infl + output_gap,
+              data = panel_pdata, 
+              model = "pooling")
+```
+
+```{r, include = FALSE}
+plmtest(pooled, type = "bp")
+```
+
+```{r, include = FALSE}
+fe_test <- plm(TFP_pwt ~ epl + human_capital + gdppc + gfcf + 
+          trade + unemp + infl + output_gap,
+          data = panel_pdata, 
+          model = "within", 
+          effect = "individual")
+```
+
+```{r, include = FALSE}
+pFtest(fe_test, pooled)
+```
+
+The Breusch-Godfrey test for serial autocorrelation rejects the null hypothesis of no temporal dependence of the residuals (chi2 = 526.32, p \< 0.01), confirming the need to correct the standard deviations by clustering at country level. This result is expected in a macroeconomic panel where economic shocks tend to persist from one year to the next. This test therefore invalidates the use of classical standard errors, calling for the use of clustered country-level standard errors for all regressions.
+
+The Breusch-Pagan test for the presence of individual effects rejects the H0 hypothesis (p \< 0.05), confirming the existence of significant individual effects.
+
+The pooled model is therefore a natural but insufficient starting point. The OLS pool suggests that countries are homogeneous, that they are structurally similar, but this is not true; a country like the United States is 15 times larger, 50 times richer and much more technologically developed than Lithuania. There are also the differences that the inhabitants of different countries have in their relationship to work, but many other reasons that make it impossible to compare all these countries without controlling for structural differences. Not doing so would introduce a variable-omitted endogeneity bias, which would make the pooled OLS analysis inconsistent. The Breusch-Pagan and F-Test tests confirm this by both rejecting H0 (p \< 0.05), confirming the presence of significant individual effects. The pooled OLS model is therefore insufficient and the introduction of fixed effects is justified.
+
+The introduction of country fixed effects makes it possible to control for all these unobserved time-invariant characteristics specific to each country. The within estimator then only exploits temporal variation within each country, eliminating biases related to heterogeneity between countries. In addition, the year fixed effects take into account the macroeconomic shocks common to all countries for a given year, such as 2008 for example. Without this addition, a simultaneous recession of all countries could be confused with an effect of the EPL if the two move together. The two-way fixed effects (TWFE) model is therefore the most suitable specification to isolate the effect of the EPL on the TFP in this context.
+
+In order to know if it is preferable to use random or fixed effects, a Hausman test is carried out. The test rejects the null hypothesis (chi2 = 20.587, p = 0.008) at the 1% threshold, indicating that the random-effects model is statistically unacceptable. OECD countries differ structurally in history, culture and institutions, and these differences are likely to be correlated with the EPL. However, the random-effects model assumes that unobserved individual effects are orthogonal to the regressers, which is an implausible assumption in a context where a country’s labor laws are precisely related to its unobservable institutional characteristics. The bidirectional fixed effects model, by eliminating this heterogeneity, makes it possible to correct this bias. In accordance with standard practice in macroeconomic panel econometrics, the main specification chosen is therefore the country-level year-to-country fixed effects model.
+
+Based on preliminary test results, serial autocorrelation (Breusch-Pagan), presence of significant individual effects (Breusch-Pagan and F-test) and endogeneity of these effects (Hausman). All converge towards the same conclusion: the bidirectional fixed effects model with standard errors clustered at country level is the only economically valid specification in this context.
+
+The regression analysis will be done in 4 steps: first, I will estimate a pooled RE, then an OLS, followed by a fixed-effect regression, and finally on the main model with two-way fixed effects. The reason is simple: compare the 4 regressions to understand the usefulness of the fixed effects. The order is deliberately from the simplest to the most complex.
+
+In a macroeconomic panel, residuals are likely to present two econometric problems. On one hand, the heteroscedasticity the variance of errors is not constant between countries, large economies like the US or Japan having very different structural characteristics from small economies like Luxembourg or Iceland. On the other hand, serial autocorrelation, the economic shocks of one year tend to persist the following year within the same country as confirmed by the Breusch-Godfrey test developed above.
+
+These two problems do not bias the estimated coefficients but render the classical standard deviations invalid, leading to incorrect hypothesis tests. In order to correct these biases, all regressions will be estimated with robust standard errors clusterized at the country level, following the recommendation of Abadie, Athey, Imbens and Wooldridge (2023) for panel data.
+
+It is important to be explicit in what this analysis allows and does not allow to be done. The within estimator only exploits the temporal variation of the EPL within each country. However, the EPL index is an institutional variable that evolves little and slowly over time: labor law reforms are rare, gradual and often of low amplitude over a period of twenty years. The same goes for the TFP, in the previous section we saw that the latter had relatively little change. This low within variance is a limit to identification, as the fixed effects estimator has little variation to identify the effect of EPL on TFP once heterogeneity between countries is eliminated.
+
+### 6. Results
+
+After having done the descriptive and explanatory parts, we should move on to the empirical analysis of our model:
+
+```{r, include = FALSE}
+panel <- pdata.frame(panel_raw, index = c("iso3", "year")) 
+pdim(panel)
+```
+
+```{r, include = FALSE}
+names(panel)
+```
+
+```{r, include = FALSE}
+Random_OLS <- plm(
+  TFP_pwt ~ epl + human_capital + gdppc + gfcf + trade + unemp + infl + output_gap,
+  data = panel, model = "random")
+
+summary(Random_OLS)
+```
+
+```{r, include = FALSE}
+pool_ols <- feols(
+  TFP_pwt ~ epl + human_capital + gdppc + gfcf + trade + unemp + infl + output_gap,
+  data = panel_clean,
+  cluster = ~ iso3
+)
+
+summary(pool_ols)
+```
+
+```{r, include = FALSE}
+fe_model <- feols( 
+  TFP_pwt ~ epl + human_capital + gdppc + gfcf + trade + unemp + infl + output_gap | iso3,
+  data = panel_clean, 
+  cluster = ~ iso3)
+
+summary(fe_model)
+```
+
+```{r, include = FALSE}
+# Modèle principale :
+fe_twin <- feols( 
+  TFP_pwt ~ epl + human_capital + gdppc + gfcf + trade + unemp + infl + output_gap | iso3 + year,
+  data = panel_clean, 
+  cluster = ~ iso3)
+
+summary(fe_twin)
+```
+
+```{r, include = FALSE}
+fe_twoway_plm <- plm(TFP_pwt ~ epl + human_capital + gdppc + gfcf + 
+                     trade + unemp + infl + output_gap,
+                     data = panel_pdata, 
+                     model = "within",
+                     effect = "twoways")
+
+pwartest(fe_twoway_plm)
+```
+
+The Wooldridge test largely rejects the H0 hypothesis (F= 399.16, p-value \< 0.01). The residuals of the TWFE model therefore show a significant serial autocorrelation. This test, applied this time to the residuals of the main model, confirms what the Breusch-Godfrey test had already detected in section 5: economic shocks from one year persist the following year within the same country. This result justifies once again the use of clustered standard errors.
+
+```{r, include = FALSE}
+panel_exo <- panel_clean %>%
+  group_by(iso3) %>%
+  mutate(epl_lead = dplyr::lead(epl, 1)) %>%
+  ungroup()
+
+fe_exo_test <- feols(TFP_pwt ~ epl + epl_lead + 
+                     human_capital + gdppc + gfcf + 
+                     trade + unemp + infl + output_gap | 
+                     iso3 + year,
+                     data = panel_exo,
+                     cluster = ~ iso3)
+summary(fe_exo_test)
+```
+
+In order to test the strict exogeneity of the EPL, we add to the model the advanced value of the EPL variable, noted epl_lead. If TFP shocks anticipated future changes in the EPL, for example if governments adjusted their labor laws in response to productivity changes, the coefficient associated with epl_lead would be significant, signaling a reverse causality. The associated coefficient is nonsignificant ($\beta$ = −0.006, p = 0.777), which does not reject the null hypothesis of strict exogeneity and validates the use of the Within estimator. There is no inverse causality.
+
+```{r}
+#| label: tbl-models
+#| tbl-cap: "Comparison of estimation strategies"
+modelsummary(
+  list("RE" = Random_OLS, "Pooled OLS" = pool_ols, 
+       "FE One-way" = fe_model, "TWFE" = fe_twin),
+  stars = TRUE, 
+  gof_omit = "...",
+  output = "kableExtra"
+) %>%
+  kable_styling(font_size = 7, latex_options = "scale_down")
+```
+
+Table 4 presents the results of the four specifications carried out. By comparing the 4 regressions, we can get a clear idea: the more complex the model, the more it gains in general precision ($R^2$); the first OLS pooled model with random effect (RE) has a $R^2$ of 0.469 while the last model, the main model, the one with country/year fixed effects and clustered standards errors displays a $R^2$ of 0.908, which is a much more accurate general model precision.
+
+Nevertheless, the RE model offers a very high significance of about 1% for almost all variables except for trade where the significance is true at 10%. This significance is lost for several variables as the model becomes more complex.
+
+This is the case of the EPL, the main explanatory variable goes from a positive and very significant effect in the RE model to non-significant with a coefficient increasingly close to 0 as soon as the model is modified. The positive association observed in OLS pooled seems to largely capture structural differences between countries, and disappears when controlling for fixed country heterogeneities and common period shocks. This is due to the fact that the RE model assumes that unobserved individual heterogeneity $c_i$ is uncorrelated with the regressers. However, the Hausman test carried out upstream rejects this hypothesis: the significant difference between the EPL coefficient estimated by random effects (+0.033, significant at the 1% threshold) and that estimated by bidirectional fixed effects (+0.010, not significant) indicates that $c_i$ is actually correlated with the EPL index. This result is economically coherent: countries historically characterized by high employment protection such as France, Italy or Spain also have distinct productive structures for reasons independent of labor regulations. The random effects model thus absorbs some of this heterogeneity between countries in the EPL coefficient, generating a positive bias.
+
+As expected, the main model is more efficient and more accurate than the RE model, so it is retained as the main model after empirical verification.
+
+```{r}
+#| label: tbl-FE-models
+#| tbl-cap: "Main Model Results"
+
+summary(fe_twin)
+```
+
+The results of the bi-directional fixed effects model with standard errors clustered at country level (main model) are presented in the table above. The main variable of interest, the EPL index, shows a positive coefficient of 0.0104, but this one is not statistically significant (p = 0.364). Other times, an increase of one unit in the EPL index would be associated with a 0.0104 increase in the level of the TFP, but this effect is statistically indifferentiable from zero. This result constitutes a null finding, which is consistent with some of the literature highlighting the low temporal variance of the EPL index and the sectoral heterogeneity of effects (Conti and Sulis, 2016).
+
+Among the control variables, four have a sufficient level of significance. The GDP per capita (gdppc) shows a positive and significant coefficient at the 1% threshold ($\beta$ = 0.000012): ceteris paribus, an increase of \$1,000 in GDP per capita would be associated with an increase of 0.012 in the TFP level. This result is consistent, the more developed economies benefit from greater technological absorption and diffusion capacities, which translate into a higher level of productive efficiency.
+
+Gross fixed capital formation (GFCF) has a negative and significant coefficient at the 1% threshold ($\beta$ = −0.0091): an increase of one percentage point in the GFCF/GDP ratio would be associated, ceteris paribus, with a decrease of 0.0091 in the level of TFP. This result is explained by the very construction of TFP as a Solow residual: a country that accumulates massive amounts of physical capital without gains in organizational efficiency mechanically sees its residual decrease. Gross capital accumulation therefore does not necessarily translate into a higher level of overall productivity, which depends on how it is allocated.
+
+The unemployment rate (unemp) is negatively associated with the TFP level at the 5% threshold ($\beta$ = −0.00758): an increase of one percentage point in the unemployment rate would be associated, ceteris paribus, with a lower TFP level of 0.0076. High unemployment reflects under-utilization of productive capacities and misallocation of resources within the economy, resulting in a lower level of overall efficiency.
+
+The output gap shows a positive and significant coefficient at the 5% threshold ($\beta$ = 0.00456): an increase of one percentage point in the output gap would be associated, ceteris paribus, with a higher TFP level of 0.0046, confirming the existence of a cyclical effect. When the economy produces above its potential, more intensive factor use results in a higher TFP level.
+
+Finally, inflation (infl) shows a weakly significant negative effect at the 10% threshold ($\beta$ = −0.00116): an increase of one percentage point in the inflation rate would be associated, ceteris paribus, with a TFP level lower by 0.0012, which is consistent with the literature on the destabilizing effects of price instability on productive efficiency.
+
+Human capital and trade openness are not significant in this specification, which can be explained by a small variation within the period analyzed.
+
+As for the EPL, it is positive and not significant ($\beta$ = 0.010, p = 0.36), which does not allow rejecting the null hypothesis of no effect on TFP growth. Put simply, for now, without a robustness test, it is impossible to identify a significant impact, both positive and negative, of the EPL on the TFP at the macroeconomic level compared to this database. This result is not absurd, as seen in section 2.; some papers also do not show any statistical significance of the EPL on the TFP. Of course, most research has found a negative impact of the EPL on the TFP, but often these analyses were done on a specific country, with EPL analyses according to sectors, so the methodology was not the same.
+
+Following this inconclusive result, the use of robustness regressions becomes necessary.
+
+### 7. Robustness
+
+```{r, include = FALSE}
+rob_fdi <- feols(
+  TFP_pwt ~ epl + human_capital + gdppc + gfcf + trade + unemp + infl + output_gap + fdi | iso3 + year,
+  data = panel_clean,
+  cluster = ~ iso3
+)
+
+summary(rob_fdi)
+```
+
+```{r, include = FALSE}
+rob_gov_log <- feols(
+  TFP_pwt ~ epl + human_capital + gdppc + gfcf + trade + 
+            unemp + infl + output_gap + log(gov_cons) | iso3 + year,
+  data = panel_clean,
+  cluster = ~ iso3
+)
+
+summary(rob_gov_log)
+```
+
+```{r, include = FALSE}
+rob_almp <- feols(
+  TFP_pwt ~ epl + almp_training + human_capital + gdppc + gfcf + trade + unemp + infl + output_gap | iso3 + year,
+  data = panel_clean,
+  cluster = ~ iso3
+)
+
+summary(rob_almp)
+```
+
+```{r, include = FALSE}
+fe_twin_ln_TFP <- feols(
+  ln_TFP_pwt ~ epl + human_capital + gdppc + gfcf + trade + unemp + infl + output_gap | iso3 + year,
+  data = panel_clean,
+  cluster = ~ iso3
+)
+
+summary(fe_twin_ln_TFP)
+```
+
+```{r, include = FALSE}
+panel_cre <- panel_clean %>%
+  group_by(iso3) %>%
+  mutate(
+    mean_epl = mean(epl, na.rm = TRUE),
+    mean_human_capital = mean(human_capital, na.rm = TRUE),
+    mean_gdppc = mean(gdppc, na.rm = TRUE),
+    mean_gfcf = mean(gfcf, na.rm = TRUE),
+    mean_trade = mean(trade, na.rm = TRUE),
+    mean_unemp = mean(unemp, na.rm = TRUE),
+    mean_infl = mean(infl, na.rm = TRUE),
+    mean_output_gap = mean(output_gap, na.rm = TRUE)
+  ) %>%
+  ungroup()
+```
+
+```{r, include = FALSE}
+cre_mundlak <- feols(
+  ln_TFP_pwt ~ epl + human_capital + gdppc + gfcf + trade + unemp + infl + output_gap +
+    mean_epl + mean_human_capital + mean_gdppc + mean_gfcf + mean_trade + mean_unemp + mean_infl + mean_output_gap
+  | year,
+  data = panel_cre,
+  cluster = ~ iso3
+)
+
+summary(cre_mundlak)
+```
+
+The purpose of this part is to check if the main model is consistent when adding or slightly changing the model specification.
+
+I decided to use 4 robustness regressions. First of all, a model that adds ALMP (Active Labour Market Policies); these are public expenditures intended to help the unemployed find a job or improve their skills. It is interesting to add it because it is a complementary variable to the EPL in a way that some countries can have a strict EPL while compensating with high ALMP expenses to facilitate the reallocation of work. Note that Turkey was removed from the panel for this regression because it has no observations of the ALMP variable over the entire period. Moreover, some countries have 1 or 2 years missing, which is negligible; they are therefore retained.
+
+Then, I measured a regression using the public consumption log. I logged it because the level values were far too large, creating a more complex and less intuitive analysis. The purpose of adding this regression is to observe whether the state is likely to affect TFP through infrastructure or public R&D spending. Moreover, this allows us to see if the EPL is robust to state size control.
+
+Then I added a regression putting the dependent variable TFP into a log. This specification changes the functional form of the variable. Taking the logarithm of the PTF, the coefficients are interpreted as elasticities and the model is less sensitive to extreme values. This is the standard functional robustness, it verifies that the null finding does not depend on the level vs log choice.
+
+Finally, I performed a regression using the CRE-Mundlak. The idea is, instead of eliminating individual effects through the within transformation, the Mundlak-Chamberlain model explicitly models them by adding the individual means of each variable. This allows us to verify that the null finding is not related to the FE estimator, and tests whether the effects between and within differ significantly. It is an econometric alternative to the FE that confirms the robustness of the identification strategy.
+
+```{r}
+#| label: tbl-robustness
+#| tbl-cap: "Robustness Results"
+modelsummary(
+  list(
+    "TWFE (Principal)" = fe_twin,
+    "TWFE + ALMP"      = rob_almp,
+    "TWFE + log(Gov)"  = rob_gov_log,
+    "TWFE ln(TFP)"     = fe_twin_ln_TFP,
+    "Mundlak-CRE"      = cre_mundlak
+  ),
+  stars = c('*' = 0.1, '**' = 0.01, '***' = 0.001),
+  coef_omit = "mean_",
+  output = "kableExtra",
+  coef_rename = c(
+    "epl"            = "EPL",
+    "human_capital"  = "Human Capital",
+    "gdppc"          = "GDP/hab",
+    "gfcf"           = "GFCF",
+    "trade"          = "Trade Openess",
+    "unemp"          = "Unemployment",
+    "infl"           = "Inflation",
+    "output_gap"     = "Output gap",
+    "almp_training"  = "ALMP",
+    "log(gov_cons)"  = "log(public consumption)"
+  ),
+  gof_map = c("nobs", "adj.r.squared", "within.r.squared"),
+) %>%   
+  kable_styling(font_size = 7, latex_options = "scale_down")
+```
+
+All the alternative specifications confirm the robustness of the null finding: the EPL coefficient remains positive and statistically non-significant in four out of five specifications, and changes sign but remains non-significant when public consumption is introduced in logarithm. These results suggest that the absence of detectable effect of EPL on TFP is therefore not sensitive to the chosen specifications.
+
+However, this result should be interpreted with caution. Indeed, the within estimator only uses the temporal variation of the EPL within each country, but this variation is particularly low over the period 1998-2019. A panel covering a longer period, incorporating episodes of major reforms such as the 1980s-1990s deregulations in the United Kingdom or Denmark, would provide more variation and mechanically increase the statistical power of the estimator. Similarly, extending the sample to include non-OECD countries with greater institutional heterogeneity and more brutal reforms would help identify an effect that the structural homogeneity of advanced economies tends to mask.
+
+### 8. Conclusion :
+
+The objective of this project was to analyse empirically the impact of employment protection legislation on total factor productivity and thus on productivity at the macroeconomic level. We started with a panel of 33 OECD countries over a 22-year period from 1998 to 2019. The central question was: Does tighter labor-market regulation, as measured by the OECD’s EPL index, significantly affect advanced economies’ productive efficiency?
+
+To answer this question, the chosen model was the one with bidirectional fixed effects and clustered standard errors. This choice was validated by all the econometric tests carried out; these tests converged towards the same conclusion: unobserved structural differences between countries are correlated with the EPL, making the pooled model inconsistent. The within estimator eliminates this problem by analyzing the effects of EPL on the TFP only across countries themselves (intra-country). However, due to an analysis carried out over the years within a country, we lose variance in our variables, which reduces the possibility of obtaining statistical significance.
+
+This was the case here, on the main model, FE (fixed effects) country/year with clustered standard errors, we obtain a null finding; specifically, statistically, no causality is admissible, whether positive or negative. We obtain a positive but statistically non-significant coefficient ($\beta$ = 0.010, p = 0.364). It was then logical to use robustness regressions to observe whether the results held up. 4 additional specifications were then realized: inclusion of ALMP expenditures, substitution of public consumption, logarithm shift of the dependent variable, and estimation by the Mundlak-Chamberlain model. This lack of effect is confirmed in these regressions, to the extent that the result of the regression with the substitution of public consumption gives us a negative but also non-significant coefficient ($\beta$ = - 0.007, p = 0.65), which increases the uncertainty about an EPL having a positive or negative impact at the macroeconomic level. The robustness of this null finding through such different specifications reinforces its credibility and suggests that it is not a sensitivity related to the chosen specification.
+
+This result does not contradict the literature on the subject. As explained in section 2, the analyses carried out were mostly conducted from a microeconomic, sometimes sectoral point of view, and it is known that the impact of EPL on TFP is subject to heterogeneity; some sectors are more affected by these regulations than others. This is the case for sectors that are highly intensive in human capital. At the macroeconomic and multi-country levels, two mechanisms reduce the ability to identify such an effect. On the one hand, national aggregation smoothes the heterogeneity of the effect on different sectors, specifically the identification channel of literature. On the other hand, the low temporal variance within the period analyzed: during this period, few major reforms occurred and were mostly smoothed out. This deprives the within estimator of the variation necessary to identify a causal effect. In this sense, the absence of significance is more a limit to identification than an absence of real economic effect.
+
+This project therefore presents several limitations that open up avenues of research for the future: First, we could extend the period analyzed, to the 1980s for example, a period that has seen many changes in employment protection legislation. This would increase the variation of the EPL and the TFP, probably allowing us to observe a causal identification. Secondly, the expansion of the sample to include non-member countries, such as poor countries, could raise questions about a possible heterogeneous causality depending on a country’s wealth. Third, an analysis based on different sectors at the macroeconomic level would probably be an interesting way to go in the direction of the study by Conti and Sulis (2016), according to which the EPL has a changing effect on productivity depending on the sector studied.
+
+Ultimately, this project contributes to the literature by confirming the difficulty of obtaining a causal identification of EPL on TFP (productivity) at the macroeconomic level over a recent period and that the results obtained at the microeconomic level do not translate in the same way from a macroeconomic perspective. This result calls for caution when it comes to the real meaning of the impact of EPL on the TFP and confirms upstream studies that observe a different causal effect depending on the sector.
+
+### 9. References :
+
+Abadie, A., Athey, S., Imbens, G. W. et Wooldridge, J. M. (2023). "When Should You Adjust Standard Errors for Clustering?", *The Quarterly Journal of Economics*, 138(1), 1–35.
+
+Bassanini, A., Nunziata, L. et Venn, D. (2009). "Job Protection Legislation and Productivity Growth in OECD Countries", *Economic Policy*, 24(58), 349–402.
+
+Ciminelli, G. et Franco, G. (2025). "Job Protection Deregulation, Productivity and the Distribution of Income in Italy: Firm-Level Evidence from the Jobs Act", *OECD Productivity Working Papers*, No. 37, OECD Publishing, Paris. 
+
+Conti, M. et Sulis, G. (2016). "Human Capital, Employment Protection and Growth in Europe", *Journal of Comparative Economics*, 44(2), 213–230.
+
+Feenstra, R. C., Inklaar, R. et Timmer, M. P. (2015). "The Next Generation of the Penn World Tables", *American Economic Review*, 105(10), 3150–3182.
+
+Li, G., Fujiyama, K., Wu, C. et Zheng, Y. (2024). "Employment Protection, Corporate Governance, and Labor Productivity around the World", *Journal of International Financial Markets, Institutions and Money*, 92, 101978.
+
+Solow, R. M. (1957). "Technical Change and the Aggregate Production Function", *The Review of Economics and Statistics*, 39(3), 312–320.
